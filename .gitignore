@@ -1,0 +1,6 @@
+*.dmnd
+*.fasta
+*.json
+*.gbk
+*.tar.?z
+*/clusters.txt

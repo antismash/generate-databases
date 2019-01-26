@@ -3,4 +3,5 @@
 *.json
 *.gbk
 *.tar.?z
+*.lof
 */clusters.txt

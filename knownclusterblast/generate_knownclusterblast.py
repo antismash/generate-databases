@@ -84,24 +84,33 @@ class MibigCluster:
     def write_fasta(self, handle):
         """Write all loci to handle in FASTA format."""
         for locus in self.loci:
-            header = ">{l.accession}|{l.identifier}\n".format(l=locus)
+            header = ">{l.accession}|{l.cluster_nr}|{l.identifier}\n".format(l=locus)
             handle.write(header)
             handle.write(locus.sequence)
             handle.write('\n')
 
+    def write_old_fasta(self, handle):
+        """Write all loci to handle in old-style FASTA format."""
+        for locus in self.loci:
+            strand = "+" if locus.location.strand == 1 else "-"
+            start = locus.location.nofuzzy_start + 1
+            header = (">{l.accession}|c{l.cluster_nr}|{start}-{l.location.nofuzzy_end}|{strand}|"
+                      "{l.safe_locus_tag}|{l.safe_annotation}|{l.identifier}\n".format(l=locus, start=start, strand=strand))
+            handle.write(header)
+            handle.write(locus.sequence)
+            handle.write('\n')
 
     def write_tabs(self, handle):
         """Write cluster info in ClusterBlast tabular format."""
         elements = [
             self.mibig_id,
             self.description,
-            str(self.cluster_nr),
+            "c{}".format(self.cluster_nr),
             self.cluster_type,
-            "partial" if self.minimal else "full",
+            ";".join(map(lambda l: l.safe_locus_tag, self.loci)),
             ";".join(map(lambda l: l.identifier, self.loci)),
         ]
         handle.write("\t".join(elements) + "\n")
-
 
     def to_dict(self):
         """Get a dictionary representation for JSON output."""
@@ -167,16 +176,23 @@ class MibigLocus:
 
     @property
     def identifier(self):
+        if self.protein_accession:
+            return self.protein_accession
         if self.locus_tag:
             return self.locus_tag
         if self.gene_id:
             return self.gene_id
-        if self.protein_accession:
-            return self.protein_accession
+
+    @property
+    def safe_locus_tag(self):
+        return self.locus_tag or "no_locus_tag"
 
     @property
     def safe_annotation(self):
-        return self.annotation.replace(" ", "_")
+        ann = self.annotation.replace(" ", "_")
+        if ann == "(unknown)":
+            ann = ""
+        return ann
 
     def to_dict(self):
         """Return a dict representation for JSON outputs."""
@@ -185,6 +201,12 @@ class MibigLocus:
             "annotation": self.annotation,
             "location": str(self.location),
         }
+        if self.protein_accession:
+            self_dict['protein_accession'] = self.protein_accession
+        if self.locus_tag:
+            self_dict['locus_tag'] = self.locus_tag
+        if self.gene_id:
+            self_dict['gene_id'] = self.gene_id
         return self_dict
 
 
@@ -216,7 +238,7 @@ def run(args):
 
     with open("proteins.fasta", "w") as prots, open("clusters.txt", "w") as tabs:
         for cluster in clusters:
-            cluster.write_fasta(prots)
+            cluster.write_old_fasta(prots)
             cluster.write_tabs(tabs)
 
     with open("clusters.json", "w") as handle:

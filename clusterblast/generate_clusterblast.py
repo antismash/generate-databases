@@ -32,7 +32,7 @@ def main():
     if args.dir is not None:
         for root, _, files in os.walk(args.dir):
             for filename in files:
-                if filename.endswith(".gbk") and "cluster" in filename:
+                if filename.endswith(".gbk") and "final" in filename:
                     full_name = os.path.join(root, filename)
                     file_list.append(full_name)
                     print("found", full_name)

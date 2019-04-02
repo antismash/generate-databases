@@ -33,8 +33,9 @@ def main():
         for root, _, files in os.walk(args.dir):
             for filename in files:
                 if filename.endswith(".gbk") and "cluster" in filename:
-                    file_list.append(filename)
-                    print("found", filename)
+                    full_name = os.path.join(root, filename)
+                    file_list.append(full_name)
+                    print("found", full_name)
     else:
         with open(args.lof, 'r') as handle:
             file_list = list(map(str.strip, handle.readlines()))

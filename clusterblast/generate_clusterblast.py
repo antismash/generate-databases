@@ -131,6 +131,29 @@ class AsdbCluster:
             handle.write(locus.sequence)
             handle.write('\n')
 
+    def write_long_fasta_legacy(self, handle):
+        """Write all loci to handle in FASTA format with long headers in legacy format."""
+        for locus in self.loci:
+            strand = "+" if locus.location.strand == 1 else "-"
+            start = locus.location.nofuzzy_start + 1
+            header = (">{l.accession}|c{l.cluster_nr}|{start}-{l.location.nofuzzy_end}|{strand}|"
+                      "{l.safe_locus_tag}|{l.safe_annotation}|{l.identifier}\n".format(l=locus, start=start, strand=strand))
+            handle.write(header)
+            handle.write(locus.sequence)
+            handle.write('\n')
+
+    def write_tabs_legacy(self, handle):
+        """Write cluster info in ClusterBlast legacy tabular format."""
+        elements = [
+            self.accession,
+            self.description,
+            "c{}".format(self.cluster_nr),
+            self.cluster_type,
+            ";".join(map(lambda l: l.safe_locus_tag, self.loci)),
+            ";".join(map(lambda l: l.identifier, self.loci)),
+        ]
+        handle.write("\t".join(elements) + "\n")
+
     def write_tabs(self, handle):
         """Write cluster info in ClusterBlast tabular format."""
         elements = [
@@ -143,7 +166,6 @@ class AsdbCluster:
             ";".join(map(lambda l: l.identifier, self.loci)),
         ]
         handle.write("\t".join(elements) + "\n")
-
 
     def to_dict(self):
         """Get a dictionary representation for JSON output."""
@@ -210,16 +232,23 @@ class AsdbLocus:
 
     @property
     def identifier(self):
+        if self.protein_accession:
+            return self.protein_accession
         if self.locus_tag:
             return self.locus_tag
         if self.gene_id:
             return self.gene_id
-        if self.protein_accession:
-            return self.protein_accession
+
+    @property
+    def safe_locus_tag(self):
+        return self.locus_tag or "no_locus_tag"
 
     @property
     def safe_annotation(self):
-        return self.annotation.replace(" ", "_")
+        ann = self.annotation.replace(" ", "_")
+        if ann == "(unknown)":
+            ann = ""
+        return ann
 
     def to_dict(self):
         """Return a dict representation for JSON outputs."""
@@ -228,6 +257,13 @@ class AsdbLocus:
             "annotation": self.annotation,
             "location": str(self.location),
         }
+        if self.protein_accession:
+            self_dict['protein_accession'] = self.protein_accession
+        if self.locus_tag:
+            self_dict['locus_tag'] = self.locus_tag
+        if self.gene_id:
+            self_dict['gene_id'] = self.gene_id
+
         return self_dict
 
 
@@ -257,11 +293,15 @@ def run(file_list: List[str]) -> None:
 
     with open("proteins.fasta", "w") as prots, \
          open("verbose_proteins.fasta", "w") as verbose_prots, \
-         open("clusters.txt", "w") as tabs:
+         open("clusters.txt", "w") as tabs, \
+         open("legacy_clusters.txt", "w") as legacy_tabs, \
+         open("legacy_proteins.fasta", "w") as legacy_prots:
         for cluster in clusters:
             cluster.write_fasta(prots)
             cluster.write_long_fasta(verbose_prots)
             cluster.write_tabs(tabs)
+            cluster.write_tabs_legacy(legacy_tabs)
+            cluster.write_long_fasta_legacy(legacy_prots)
 
     with open("clusters.json", "w") as handle:
         json.dump(list(map(lambda x: x.to_dict(), clusters)), handle)

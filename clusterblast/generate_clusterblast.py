@@ -137,7 +137,7 @@ class AsdbCluster:
             strand = "+" if locus.location.strand == 1 else "-"
             start = locus.location.nofuzzy_start + 1
             header = (">{l.accession}|c{l.cluster_nr}|{start}-{l.location.nofuzzy_end}|{strand}|"
-                      "{l.safe_locus_tag}|{l.safe_annotation}|{l.identifier}\n".format(l=locus, start=start, strand=strand))
+                      "{l.safe_locus_tag}|{l.safe_annotation}|{l.safe_accession}\n".format(l=locus, start=start, strand=strand))
             handle.write(header)
             handle.write(locus.sequence)
             handle.write('\n')
@@ -232,16 +232,20 @@ class AsdbLocus:
 
     @property
     def identifier(self):
-        if self.protein_accession:
-            return self.protein_accession
         if self.locus_tag:
             return self.locus_tag
+        if self.protein_accession:
+            return self.protein_accession
         if self.gene_id:
             return self.gene_id
 
     @property
     def safe_locus_tag(self):
         return self.locus_tag or "no_locus_tag"
+
+    @property
+    def safe_accession(self):
+        return self.protein_accession or self.identifier
 
     @property
     def safe_annotation(self):

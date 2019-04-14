@@ -185,7 +185,7 @@ class MibigLocus:
 
     @property
     def safe_locus_tag(self):
-        return self.locus_tag or "no_locus_tag"
+        return self.locus_tag or self.identifier
 
     @property
     def safe_annotation(self):

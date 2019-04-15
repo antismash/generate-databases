@@ -4,6 +4,7 @@ import argparse
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqFeature import (
+    CompoundLocation,
     FeatureLocation,
     SeqFeature,
 )
@@ -11,7 +12,6 @@ import json
 import os
 import sys
 from typing import (
-    Any,
     Dict,
     List,
     Optional,
@@ -53,6 +53,7 @@ class AsdbCluster:
         'loci',
         'minimal',
     )
+
     def __init__(self,
                  accession: str,
                  cluster_nr: int,
@@ -83,6 +84,7 @@ class AsdbCluster:
                        idx: int,
                        minimal: bool):
         accession = record.annotations['accessions'][0]
+        record_len = len(record)
 
         description = record.description
 
@@ -92,12 +94,26 @@ class AsdbCluster:
             if note.startswith('Cluster number:'):
                 cluster_nr = int(note[15:])
 
+        if cluster_nr is None:
+            raise RuntimeError("Invalid cluster entry in {}".format(accession))
+
+        if len(cluster) > 500000:
+            print("Cluster too large:", record.id, cluster_nr)
+            return None
+
         cluster_type = cluster.qualifiers['product'][0]
         contig_edge = cluster.qualifiers['contig_edge'][0] == 'True'
 
         cds_features = []  # type: List[SeqFeature]
-        for feature in record.features[idx-10:]:
+        start_idx = max(0, idx - 10)
+        for feature in record.features[start_idx:]:
             if feature.type != 'CDS':
+                continue
+
+            if isinstance(feature.location, CompoundLocation) and \
+                    (int(feature.location.start) == 0 and int(feature.location.end) == record_len):
+                # cross-origin feature, skip
+                print("cross-origin feature", record.id, cluster_nr, feature.qualifiers.get('locus_tag', ['unknown'])[0])
                 continue
 
             if cluster.location.start <= feature.location.start <= feature.location.end <= cluster.location.end:
@@ -106,12 +122,12 @@ class AsdbCluster:
             if feature.location.start > cluster.location.end:
                 break
 
-        if cluster_nr is None:
-            raise RuntimeError("Invalid cluster entry in {}".format(accession))
-
         loci = []  # type: List[AsdbLocus]
         for feature in cds_features:
             loci.append(AsdbLocus.from_biopython(feature, accession, cluster_nr))
+        if not loci:
+            print("failed to extract any loci for", record.id, cluster_nr)
+            return None
 
         return cls(accession, cluster_nr, cluster_type, contig_edge, description, loci, minimal)
 
@@ -150,7 +166,7 @@ class AsdbCluster:
             "c{}".format(self.cluster_nr),
             self.cluster_type,
             ";".join(map(lambda l: l.safe_locus_tag, self.loci)),
-            ";".join(map(lambda l: l.identifier, self.loci)),
+            ";".join(map(lambda l: l.safe_accession, self.loci)),
         ]
         handle.write("\t".join(elements) + "\n")
 
@@ -225,7 +241,12 @@ class AsdbLocus:
         if 'gene' in feature.qualifiers:
             optional_values['gene_id'] = feature.qualifiers['gene'][0]
         if 'locus_tag' in feature.qualifiers:
-            optional_values['locus_tag'] = feature.qualifiers['locus_tag'][0]
+            locus_tag = feature.qualifiers['locus_tag'][0]
+            if locus_tag.find('allorf') > -1:
+                print("making", locus_tag, "unique:", end=' ')
+                locus_tag = "{}_{}".format(accession, locus_tag)
+                print(locus_tag)
+            optional_values['locus_tag'] = locus_tag
         if 'protein_id' in feature.qualifiers:
             optional_values['protein_accession'] = feature.qualifiers['protein_id'][0]
         return cls(feature.location, accession, annotation, cluster_nr, sequence, **optional_values)
@@ -291,6 +312,8 @@ def run(file_list: List[str]) -> None:
                 if feature.type != "cluster":
                     continue
                 cluster = AsdbCluster.from_biopython(record, idx, minimal)
+                if not cluster:
+                    continue
                 clusters.append(cluster)
 
     clusters.sort(key=lambda x: (x.accession, x.cluster_nr))

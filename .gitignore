@@ -4,5 +4,4 @@
 *.gbk
 *.tar.?z
 *.lof
-**/clusters.txt
-**/legacy_clusters.txt
+**/*clusters.txt

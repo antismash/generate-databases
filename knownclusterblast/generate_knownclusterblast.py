@@ -18,14 +18,14 @@ from typing import (
     Type,
 )
 
-GENBANK_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "genbanks")
-JSON_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "json")
+from mibig.converters.read.top import Everything
+
+DATA_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "data")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--genbank-dir', default=GENBANK_DIR, help="Directory containing the MIBiG GenBank files")
-    parser.add_argument('--json-dir', default=JSON_DIR, help="Directory containing the MIBiG JSON files")
+    parser.add_argument('--data-dir', default=DATA_DIR, help="Directory containing the MIBiG antiSMASH run files")
 
     args = parser.parse_args()
 
@@ -34,7 +34,6 @@ def main():
 
 class MibigCluster:
     __slots__ = (
-        'cluster_nr',
         'cluster_type',
         'description',
         'loci',
@@ -43,14 +42,12 @@ class MibigCluster:
     )
     def __init__(self,
                  mibig_id: str,
-                 cluster_nr: int,
                  cluster_type: str,
                  description: str,
                  loci: List["MibigLocus"],
                  minimal: bool = True,
                 ) -> None:
         self.mibig_id = mibig_id
-        self.cluster_nr = cluster_nr
         self.cluster_type = cluster_type
 
         self.description = description
@@ -65,26 +62,25 @@ class MibigCluster:
 
     @classmethod
     def from_biopython(cls: Type["MibigCluster"],
+                       mibig_id: str,
+                       description: str,
                        record: SeqRecord,
                        cluster_type: str,
                        minimal: bool):
-        mibig_id = record.annotations['accessions'][0]
-        cluster_nr = record.annotations['sequence_version']
 
-        description = record.description
         loci = []  # type: List[MibigLocus]
         for feature in record.features:
             if feature.type != "CDS":
                 continue
 
-            loci.append(MibigLocus.from_biopython(feature, mibig_id, cluster_nr))
+            loci.append(MibigLocus.from_biopython(feature, mibig_id))
 
-        return cls(mibig_id, cluster_nr, cluster_type, description, loci, minimal)
+        return cls(mibig_id, cluster_type, description, loci, minimal)
 
     def write_fasta(self, handle):
         """Write all loci to handle in FASTA format."""
         for locus in self.loci:
-            header = ">{l.accession}|{l.cluster_nr}|{l.identifier}\n".format(l=locus)
+            header = ">{l.accession}|{l.identifier}\n".format(l=locus)
             handle.write(header)
             handle.write(locus.sequence)
             handle.write('\n')
@@ -94,7 +90,7 @@ class MibigCluster:
         for locus in self.loci:
             strand = "+" if locus.location.strand == 1 else "-"
             start = locus.location.nofuzzy_start + 1
-            header = (">{l.accession}|c{l.cluster_nr}|{start}-{l.location.nofuzzy_end}|{strand}|"
+            header = (">{l.accession}|c1|{start}-{l.location.nofuzzy_end}|{strand}|"
                       "{l.safe_locus_tag}|{l.safe_annotation}|{l.identifier}\n".format(l=locus, start=start, strand=strand))
             handle.write(header)
             handle.write(locus.sequence)
@@ -105,7 +101,6 @@ class MibigCluster:
         elements = [
             self.mibig_id,
             self.description,
-            "c{}".format(self.cluster_nr),
             self.cluster_type,
             ";".join(map(lambda l: l.safe_locus_tag, self.loci)),
             ";".join(map(lambda l: l.identifier, self.loci)),
@@ -117,7 +112,6 @@ class MibigCluster:
         self_dict = {
             "id": self.mibig_id,
             "description": self.description,
-            "cluster_nr": self.cluster_nr,
             "cluster_type": self.cluster_type,
             "completeness": "partial" if self.minimal else "full",
             "loci": list(map(lambda l: l.to_dict(), self.loci)),
@@ -129,7 +123,6 @@ class MibigLocus:
     __slots__ = (
         'accession',
         'annotation',
-        'cluster_nr',
         'gene_id',
         'location',
         'locus_tag',
@@ -141,7 +134,6 @@ class MibigLocus:
                  location: FeatureLocation,
                  accession: str,
                  annotation: str,
-                 cluster_nr: int,
                  sequence: str,
                  gene_id: Optional[str] = None,
                  locus_tag: Optional[str] = None,
@@ -149,7 +141,6 @@ class MibigLocus:
         self.location = location
         self.accession = accession
         self.annotation = annotation
-        self.cluster_nr = cluster_nr
         self.sequence = sequence
         self.gene_id = gene_id
         self.locus_tag = locus_tag
@@ -161,7 +152,7 @@ class MibigLocus:
             raise RuntimeError("No valid sequence")
 
     @classmethod
-    def from_biopython(cls: Type["MibigLocus"], feature: SeqFeature, accession:str, cluster_nr: int):
+    def from_biopython(cls: Type["MibigLocus"], feature: SeqFeature, accession: str):
         annotation = feature.qualifiers.get('product', ["(unknown)"])[0]
         sequence = feature.qualifiers['translation'][0]
 
@@ -172,7 +163,7 @@ class MibigLocus:
             optional_values['locus_tag'] = feature.qualifiers['locus_tag'][0]
         if 'protein_id' in feature.qualifiers:
             optional_values['protein_accession'] = feature.qualifiers['protein_id'][0]
-        return cls(feature.location, accession, annotation, cluster_nr, sequence, **optional_values)
+        return cls(feature.location, accession, annotation, sequence, **optional_values)
 
     @property
     def identifier(self):
@@ -211,116 +202,141 @@ class MibigLocus:
 
 
 def run(args):
-    genbank_files = [os.path.join(args.genbank_dir, filename) for filename in os.listdir(args.genbank_dir)]
+    directories = []
+    for name in os.listdir(args.data_dir):
+        directory = os.path.join(args.data_dir, name)
+        if os.path.isdir(directory):
+            directories.append(directory)
 
     clusters = []  # type: List[MibigCluster]
 
-    for gbk_file in genbank_files:
-        accession, _ = os.path.splitext(os.path.basename(gbk_file))
-        json_file = os.path.join(args.json_dir, accession + '.json')
+    print(directories)
 
-        if not os.path.exists(json_file):
-            print("Missing JSON file for", accession, file=sys.stderr)
-            continue
+    for directory in directories:
+        mibig_id = os.path.basename(directory)
+        json_file = os.path.join(directory, "{}.json".format(mibig_id))
+        with open(json_file, 'r') as handle:
+            raw_entry = open(json_file, 'r').read().strip()
+        entry = Everything(json.loads(raw_entry))
+        cluster_type = "+".join(parse_bgc_types(entry))
+        minimal = entry.cluster.minimal
+        description = "/".join([c.compound for c in entry.cluster.compounds])
+        acc = entry.cluster.loci.accession
 
-        with open(json_file, "r") as handle:
-            mibig_info = json.load(handle)
+        genbank_file = os.path.join(directory, "{}.region001.gbk".format(acc))
+        record = SeqIO.read(genbank_file, 'genbank')
 
-        cluster_type = get_cluster_type(mibig_info)
-        minimal = 'minimal' in mibig_info['general_params']
-
-        records = SeqIO.parse(gbk_file, "genbank")
-        for record in records:
-            cluster = MibigCluster.from_biopython(record, cluster_type, minimal)
-            clusters.append(cluster)
+        clusters.append(MibigCluster.from_biopython(mibig_id, description, record, cluster_type, minimal))
 
     clusters.sort(key=lambda x: x.mibig_id)
 
-    with open("proteins.fasta", "w") as prots, open("clusters.txt", "w") as tabs:
+    with open("proteins.fasta", "w") as prots, open("legacy_proteins.fasta", "w") as legacy_prots, open("clusters.txt", "w") as tabs:
         for cluster in clusters:
-            cluster.write_old_fasta(prots)
+            cluster.write_fasta(prots)
+            cluster.write_old_fasta(legacy_prots)
             cluster.write_tabs(tabs)
 
     with open("clusters.json", "w") as handle:
         json.dump(list(map(lambda x: x.to_dict(), clusters)), handle)
 
 
-def get_cluster_type(mibig_info: Dict[str, Any]) -> str:
-    cluster_type = ""
-    biosyn_class = mibig_info['general_params']['biosyn_class']
-    for cls in biosyn_class:
-        cls = cls.lower()
-        if cls == 'nrp':
-            cls = 'nrps'
-        elif cls == 'polyketide':
-            cls = get_pks_subclass(mibig_info)
-        elif cls == 'ripp':
-            cls = get_ripp_subclass(mibig_info)
+def parse_bgc_types(entry):
+    """Parse the BGC type."""
+    types = entry.cluster.biosynthetic_class
+    if "NRP" in types:
+        subtype = parse_nrp_subtype(entry)
+        if subtype:
+            types.remove("NRP")
+            types.append(subtype)
+    if "Polyketide" in types:
+        subtypes = parse_pks_subtypes(entry)
+        if subtypes:
+            types.remove("Polyketide")
+            types.extend(subtypes)
+    if "Saccharide" in types:
+        subtype = parse_saccharide_subtype(entry)
+        if subtype:
+            types.remove("Saccharide")
+            types.append(subtype)
+    if "RiPP" in types:
+        subtype = parse_ripp_subtype(entry)
+        if subtype:
+            types.remove("RiPP")
+            types.append(subtype)
+    if "Other" in types:
+        subtype = parse_other_subtype(entry)
+        if subtype:
+            types.remove("Other")
+            types.append(subtype)
 
-        cluster_type += cls + "-"
-
-    return cluster_type[:-1]
-
-
-def get_pks_subclass(mibig_info: Dict[str, Any]) -> str:
-    if not 'Polyketide' in mibig_info['general_params']:
-        print("No Polyketide section defined in", mibig_info['general_params']['mibig_accession'], file=sys.stderr)
-        return "polyketide"
-
-    if not 'pks_subclass' in mibig_info['general_params']['Polyketide']:
-        print("No pks_subclass defined in", mibig_info['general_params']['mibig_accession'], file=sys.stderr)
-        return "polyketide"
-
-    subclasses = mibig_info['general_params']['Polyketide']['pks_subclass']
-    new_cls = ""
-    for scls in subclasses:
-        scls = scls.lower()
-        if scls.startswith("trans-at"):
-            scls = "transatpks"
-        elif scls.endswith("type i"):
-            scls = "t1pks"
-        elif scls.endswith("typei"):
-            # yay, typo
-            scls = "t1pks"
-        elif scls.endswith("type ii"):
-            scls = "t2pks"
-        elif scls.endswith("type iii"):
-            scls = "t3pks"
-        elif scls.startswith("pufa"):
-            scls = "pufa"
-        elif scls == "other":
-            scls = "polyketide"
-        new_cls += scls + "+"
-
-    if new_cls == "":
-        print("Empty pks_subclass defined in", mibig_info['general_params']['mibig_accession'], file=sys.stderr)
-        return "polyketide"
-
-    return new_cls[:-1]
+    return types
 
 
-def get_ripp_subclass(mibig_info: Dict[str, Any]) -> str:
-    if not 'RiPP' in mibig_info['general_params']:
-        print("No RiPP section defined in", mibig_info['general_params']['mibig_accession'], file=sys.stderr)
-        return "ripp"
+def parse_nrp_subtype(entry):
+    """Parse NRP subtype."""
+    try:
+        subtype = entry.cluster.nrp.subclass
+    except AttributeError:
+        return None
+    if subtype in (None, "Unknown", "Other"):
+        return None
+    # I don't know any non-other lipopeptide in our dataset
+    if subtype == "Other lipopeptide":
+        subtype = "Lipopeptide"
+    elif subtype == "Ca+-dependent lipopeptide":
+        subtype = "Lipopeptide:Ca+-dependent lipopeptide"
+    return "NRP:" + subtype
 
-    if not 'ripp_subclass' in mibig_info['general_params']['RiPP']:
-        print("No ripp_subclass section defined in", mibig_info['general_params']['mibig_accession'], file=sys.stderr)
-        return "ripp"
 
-    subclass = mibig_info['general_params']['RiPP']['ripp_subclass'].lower()
+def parse_pks_subtypes(entry):
+    """Parse PKS subtypes."""
+    subtypes = []
+    try:
+        synthases = entry.cluster.polyketide.synthases
+        for synthase in synthases:
+            subtype = synthase.subclass or []
+            subtypes.extend(subtype)
+        return ["Polyketide:{} polyketide".format(t) for t in subtypes]
+    except AttributeError:
+        return []
 
-    # fix misspellings
-    if subclass == "lantipeptide":
-        subclass = "lanthipeptide"
-    elif subclass == "head-to-tailcyclized peptide":
-        subclass = "head-to-tail cyclized peptide"
-    elif subclass == "lassopeptide":
-        subclass = "lasso peptide"
-    elif subclass == "lap / microcin":
-        subclass = "lap"
 
-    return subclass
+def parse_saccharide_subtype(entry):
+    """Parse Saccharide subtype."""
+    try:
+        subtype = entry.cluster.saccharide.subclass
+    except AttributeError:
+        return None
+    if subtype is None:
+        return None
+    subtype = subtype.capitalize()
+    if subtype in ("Unknown", "Other"):
+        return None
+    if subtype == "Hybrid/tailoring":
+        subtype += " saccharide"
+    return "Saccharide:" + subtype
+
+
+def parse_ripp_subtype(entry):
+    """Parse RiPPs subtype."""
+    try:
+        subtype = entry.cluster.ripp.subclass
+    except AttributeError:
+        return None
+    if subtype in (None, "Unknown"):
+        return None
+    return "RiPP:" + subtype
+
+
+def parse_other_subtype(entry):
+    """Parse "Other" subtype."""
+    try:
+        subtype = entry.cluster.other.subclass
+    except AttributeError:
+        return None
+    if subtype in (None, "Unknown"):
+        return None
+    return "Other:" + subtype
 
 
 if __name__ == "__main__":

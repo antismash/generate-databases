@@ -222,6 +222,9 @@ def run(args):
         minimal = entry.cluster.minimal
         description = "/".join([c.compound for c in entry.cluster.compounds])
         acc = entry.cluster.loci.accession
+        if acc.startswith("MIBIG."):
+            # get rid of MIBIG. prefix
+            acc = acc[6:]
 
         genbank_file = os.path.join(directory, "{}.region001.gbk".format(acc))
         record = SeqIO.read(genbank_file, 'genbank')

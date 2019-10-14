@@ -211,8 +211,6 @@ def run(args):
 
     clusters = []  # type: List[MibigCluster]
 
-    print(directories)
-
     for directory in directories:
         mibig_id = os.path.basename(directory)
         json_file = os.path.join(directory, "{}.json".format(mibig_id))

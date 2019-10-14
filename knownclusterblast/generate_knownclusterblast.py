@@ -101,6 +101,7 @@ class MibigCluster:
         elements = [
             self.mibig_id,
             self.description,
+            "c1",
             self.cluster_type,
             ";".join(map(lambda l: l.safe_locus_tag, self.loci)),
             ";".join(map(lambda l: l.identifier, self.loci)),

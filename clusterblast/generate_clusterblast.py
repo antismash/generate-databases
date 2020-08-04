@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
 
 import argparse
-from Bio import SeqIO
-from Bio.SeqRecord import SeqRecord
-from Bio.SeqFeature import (
-    CompoundLocation,
-    FeatureLocation,
-    SeqFeature,
-)
 import json
 import os
-import sys
 from typing import (
-    Dict,
+    Iterator,
     List,
     Optional,
     Type,
 )
+
+import antismash
+from antismash.common import secmet
+
+
+DEFAULT_AS_OPTIONS = antismash.config.build_config(["--minimal"], modules=antismash.main.get_all_modules())
 
 
 def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--dir', help="Directory containing the antiSMASH DB output folders")
-    group.add_argument('--lof', help="List of files containing file names of cluster GenBank files to parse")
+    group.add_argument('--lof', help="List containing file names of antiSMASH JSON output to parse")
 
     args = parser.parse_args()
 
@@ -32,7 +30,7 @@ def main():
     if args.dir is not None:
         for root, _, files in os.walk(args.dir):
             for filename in files:
-                if filename.endswith(".gbk") and "final" in filename:
+                if filename.endswith(".json"):
                     full_name = os.path.join(root, filename)
                     file_list.append(full_name)
                     print("found", full_name)
@@ -43,10 +41,11 @@ def main():
     run(file_list)
 
 
-class AsdbCluster:
+class AsdbRegion:
     __slots__ = (
         'accession',
-        'cluster_nr',
+        'start',
+        'end',
         'cluster_type',
         'contig_edge',
         'description',
@@ -56,80 +55,48 @@ class AsdbCluster:
 
     def __init__(self,
                  accession: str,
-                 cluster_nr: int,
-                 cluster_type: str,
+                 start: int,
+                 end: int,
+                 products: str,
                  contig_edge: bool,
                  description: str,
                  loci: List["AsdbLocus"],
                  minimal: bool = True,
                 ) -> None:
         self.accession = accession
-        self.cluster_nr = cluster_nr
-        self.cluster_type = cluster_type
+        self.cluster_type = products
         self.contig_edge = contig_edge
+        self.start = start
+        self.end = end
 
         self.description = description
         # Kill useless, noisy " biosynthetic gene cluster" string
-        if self.description.endswith(" biosynthetic gene cluster"):
-            self.description = self.description[:-26]
+        assert not self.description.endswith(" biosynthetic gene cluster")
 
-        # TODO: Make sure locus tags are unique?
         self.loci = loci
 
         self.minimal = minimal
 
     @classmethod
-    def from_biopython(cls: Type["AsdbCluster"],
-                       record: SeqRecord,
-                       idx: int,
-                       minimal: bool):
+    def from_secmet(cls: Type["AsdbRegion"],
+                       record: secmet.Record,
+                       region: secmet.Region,
+                       minimal: bool = False):
         accession = record.annotations['accessions'][0]
-        record_len = len(record)
 
         description = record.description
 
-        cluster = record.features[idx]
-        cluster_nr = None
-        for note in cluster.qualifiers['note']:
-            if note.startswith('Cluster number:'):
-                cluster_nr = int(note[15:])
-
-        if cluster_nr is None:
-            raise RuntimeError("Invalid cluster entry in {}".format(accession))
-
-        if len(cluster) > 500000:
-            print("Cluster too large:", record.id, cluster_nr)
+        if len(region.location) > 500000:
+            print("Cluster too large:", record.id, region)
             return None
-
-        cluster_type = cluster.qualifiers['product'][0]
-        contig_edge = cluster.qualifiers['contig_edge'][0] == 'True'
-
-        cds_features = []  # type: List[SeqFeature]
-        start_idx = max(0, idx - 10)
-        for feature in record.features[start_idx:]:
-            if feature.type != 'CDS':
-                continue
-
-            if isinstance(feature.location, CompoundLocation) and \
-                    (int(feature.location.start) == 0 and int(feature.location.end) == record_len):
-                # cross-origin feature, skip
-                print("cross-origin feature", record.id, cluster_nr, feature.qualifiers.get('locus_tag', ['unknown'])[0])
-                continue
-
-            if cluster.location.start <= feature.location.start <= feature.location.end <= cluster.location.end:
-                cds_features.append(feature)
-
-            if feature.location.start > cluster.location.end:
-                break
 
         loci = []  # type: List[AsdbLocus]
-        for feature in cds_features:
-            loci.append(AsdbLocus.from_biopython(feature, accession, cluster_nr))
-        if not loci:
-            print("failed to extract any loci for", record.id, cluster_nr)
-            return None
+        for cds in region.cds_children:
+            loci.append(AsdbLocus.from_secmet(cds, accession))
 
-        return cls(accession, cluster_nr, cluster_type, contig_edge, description, loci, minimal)
+        return cls(accession, region.location.start, region.location.end,
+                   region.get_product_string(), region.contig_edge, description,
+                   loci, minimal)
 
     def write_fasta(self, handle):
         """Write all loci to handle in FASTA format."""
@@ -142,40 +109,17 @@ class AsdbCluster:
     def write_long_fasta(self, handle):
         """Write all loci to handle in FASTA format with long headers."""
         for locus in self.loci:
-            header = ">{l.accession}|{l.cluster_nr}|{l.location}|{l.identifier}|{l.safe_annotation}\n".format(l=locus)
+            header = ">{l.accession}|{l.location}|{l.identifier}|{l.safe_annotation}\n".format(l=locus)
             handle.write(header)
             handle.write(locus.sequence)
             handle.write('\n')
-
-    def write_long_fasta_legacy(self, handle):
-        """Write all loci to handle in FASTA format with long headers in legacy format."""
-        for locus in self.loci:
-            strand = "+" if locus.location.strand == 1 else "-"
-            start = locus.location.nofuzzy_start + 1
-            header = (">{l.accession}|c{l.cluster_nr}|{start}-{l.location.nofuzzy_end}|{strand}|"
-                      "{l.safe_locus_tag}|{l.safe_annotation}|{l.safe_accession}\n".format(l=locus, start=start, strand=strand))
-            handle.write(header)
-            handle.write(locus.sequence)
-            handle.write('\n')
-
-    def write_tabs_legacy(self, handle):
-        """Write cluster info in ClusterBlast legacy tabular format."""
-        elements = [
-            self.accession,
-            self.description,
-            "c{}".format(self.cluster_nr),
-            self.cluster_type,
-            ";".join(map(lambda l: l.safe_locus_tag, self.loci)),
-            ";".join(map(lambda l: l.safe_accession, self.loci)),
-        ]
-        handle.write("\t".join(elements) + "\n")
 
     def write_tabs(self, handle):
         """Write cluster info in ClusterBlast tabular format."""
         elements = [
             self.accession,
             self.description,
-            str(self.cluster_nr),
+            "%s-%s" % (self.start, self.end),
             self.cluster_type,
             "minimal" if self.minimal else "full",
             "incomplete" if self.contig_edge else "complete",
@@ -188,7 +132,8 @@ class AsdbCluster:
         self_dict = {
             "id": self.accession,
             "description": self.description,
-            "cluster_nr": self.cluster_nr,
+            "start": self.start,
+            "end": self.end,
             "cluster_type": self.cluster_type,
             "analysis": "minimal" if self.minimal else "full",
             "truncated": self.contig_edge,
@@ -201,8 +146,8 @@ class AsdbLocus:
     __slots__ = (
         'accession',
         'annotation',
-        'cluster_nr',
         'gene_id',
+        'identifier',
         'location',
         'locus_tag',
         'protein_accession',
@@ -210,21 +155,21 @@ class AsdbLocus:
     )
 
     def __init__(self,
-                 location: FeatureLocation,
+                 location: secmet.locations.Location,
                  accession: str,
                  annotation: str,
-                 cluster_nr: int,
                  sequence: str,
+                 identifier: str,
                  gene_id: Optional[str] = None,
                  locus_tag: Optional[str] = None,
                  protein_accession: Optional[str] = None) -> None:
         self.location = location
         self.accession = accession
         self.annotation = annotation
-        self.cluster_nr = cluster_nr
         self.sequence = sequence
         self.gene_id = gene_id
         self.locus_tag = locus_tag
+        self.identifier = identifier
         self.protein_accession = protein_accession
         if not locus_tag and not gene_id and not protein_accession:
             raise RuntimeError("No valid identifier for feature")
@@ -233,32 +178,24 @@ class AsdbLocus:
             raise RuntimeError("No valid sequence")
 
     @classmethod
-    def from_biopython(cls: Type["AsdbLocus"], feature: SeqFeature, accession:str, cluster_nr: int):
-        annotation = feature.qualifiers.get('product', ["(unknown)"])[0]
-        sequence = feature.qualifiers['translation'][0]
+    def from_secmet(cls: Type["AsdbLocus"], feature: secmet.CDSFeature, accession: str):
+        annotation = feature.product or "(unknown)"
 
         optional_values = {}  # type: Dict[str, str]
-        if 'gene' in feature.qualifiers:
-            optional_values['gene_id'] = feature.qualifiers['gene'][0]
-        if 'locus_tag' in feature.qualifiers:
-            locus_tag = feature.qualifiers['locus_tag'][0]
+
+        if feature.locus_tag:
+            locus_tag = feature.locus_tag
             if locus_tag.find('allorf') > -1:
                 print("making", locus_tag, "unique:", end=' ')
                 locus_tag = "{}_{}".format(accession, locus_tag)
                 print(locus_tag)
             optional_values['locus_tag'] = locus_tag
-        if 'protein_id' in feature.qualifiers:
-            optional_values['protein_accession'] = feature.qualifiers['protein_id'][0]
-        return cls(feature.location, accession, annotation, cluster_nr, sequence, **optional_values)
 
-    @property
-    def identifier(self):
-        if self.locus_tag:
-            return self.locus_tag
-        if self.protein_accession:
-            return self.protein_accession
-        if self.gene_id:
-            return self.gene_id
+        optional_values['gene_id'] = feature.gene
+        optional_values['protein_accession'] = feature.protein_id
+
+        return cls(feature.location, accession, annotation, feature.translation,
+                   feature.get_name(), **optional_values)
 
     @property
     def safe_locus_tag(self):
@@ -292,46 +229,52 @@ class AsdbLocus:
         return self_dict
 
 
+def regenerate(filename) -> Iterator[secmet.Record]:
+    results = antismash.common.serialiser.AntismashResults.from_file(filename)
+    for record, module_results in zip(results.records, results.results):
+        record.strip_antismash_annotations()
+        if antismash.detection.hmm_detection.__name__ not in module_results:
+            return
+        # reannotate in the order that antismash does, for correct regions etc
+        antismash.main.run_detection(record, DEFAULT_AS_OPTIONS, module_results)
+
+        def regen(raw, module):
+            assert raw
+            regenerated = module.regenerate_previous_results(raw, record, DEFAULT_AS_OPTIONS)
+            assert regenerated is not None, "%s results failed to generate for %s" % (module.__name__, record.id)
+            regenerated.add_to_record(record)
+            return regenerated
+
+        for module in antismash.main.get_analysis_modules():
+            if module.__name__ in module_results:
+                module_results[module.__name__] = regen(module_results[module.__name__], module)
+
+        for val in module_results.values():
+            assert not isinstance(val, dict)
+
+        yield record
+
+
 def run(file_list: List[str]) -> None:
-    clusters = []  # type: List[AsdbCluster]
+    regions = []  # type: List[AsdbRegion]
 
-    for gbk_file in file_list:
-        log_file = os.path.join(os.path.dirname(gbk_file), 'log')
+    for filename in file_list:
+        for record in regenerate(filename):
+            for region in record.get_regions():
+                regions.append(AsdbRegion.from_secmet(record, region))
 
-        if not os.path.exists(log_file):
-            print("Missing log file for", gbk_file, file=sys.stderr)
-            continue
-
-        with open(log_file, "r") as handle:
-            minimal = 'minimal' in handle.readline()
-
-        records = SeqIO.parse(gbk_file, "genbank")
-        for record in records:
-            record.features.sort(key=lambda x: (x.location.nofuzzy_start, x.location.nofuzzy_end))
-            for idx, feature in enumerate(record.features):
-                if feature.type != "cluster":
-                    continue
-                cluster = AsdbCluster.from_biopython(record, idx, minimal)
-                if not cluster:
-                    continue
-                clusters.append(cluster)
-
-    clusters.sort(key=lambda x: (x.accession, x.cluster_nr))
+    regions.sort(key=lambda x: (x.accession, x.start))
 
     with open("proteins.fasta", "w") as prots, \
          open("verbose_proteins.fasta", "w") as verbose_prots, \
-         open("clusters.txt", "w") as tabs, \
-         open("legacy_clusters.txt", "w") as legacy_tabs, \
-         open("legacy_proteins.fasta", "w") as legacy_prots:
-        for cluster in clusters:
-            cluster.write_fasta(prots)
-            cluster.write_long_fasta(verbose_prots)
-            cluster.write_tabs(tabs)
-            cluster.write_tabs_legacy(legacy_tabs)
-            cluster.write_long_fasta_legacy(legacy_prots)
+         open("clusters.txt", "w") as tabs:
+        for region in regions:
+            region.write_fasta(prots)
+            region.write_long_fasta(verbose_prots)
+            region.write_tabs(tabs)
 
     with open("clusters.json", "w") as handle:
-        json.dump(list(map(lambda x: x.to_dict(), clusters)), handle)
+        json.dump(list(map(lambda x: x.to_dict(), regions)), handle)
 
 
 if __name__ == "__main__":

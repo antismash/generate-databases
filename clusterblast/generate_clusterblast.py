@@ -68,13 +68,8 @@ class AsdbRegion:
         self.contig_edge = contig_edge
         self.start = start
         self.end = end
-
         self.description = description
-        # Kill useless, noisy " biosynthetic gene cluster" string
-        assert not self.description.endswith(" biosynthetic gene cluster")
-
         self.loci = loci
-
         self.minimal = minimal
 
     @classmethod

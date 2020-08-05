@@ -130,7 +130,6 @@ class AsdbRegion:
             "start": self.start,
             "end": self.end,
             "cluster_type": self.cluster_type,
-            "analysis": "minimal" if self.minimal else "full",
             "truncated": self.contig_edge,
             "loci": list(map(lambda l: l.to_dict(), self.loci)),
         }

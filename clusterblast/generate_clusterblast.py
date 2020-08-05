@@ -4,10 +4,12 @@ import argparse
 import json
 import os
 from typing import (
+    Dict,
     Iterator,
     List,
     Optional,
     Type,
+    Union,
 )
 
 import antismash
@@ -41,6 +43,29 @@ def main():
     run(file_list)
 
 
+class AsdbProtocluster:
+    __slots__ = (
+        'product',
+        'start',
+        'end',
+    )
+    def __init__(self, product, start, end):
+        self.product = product
+        self.start = start
+        self.end = end
+
+    def to_dict(self) -> Dict[str, Union[str, int]]:
+        return {
+            "product": self.product,
+            "start": self.start,
+            "end": self.end,
+        }
+
+    @classmethod
+    def from_secmet(cls: Type["AsdbProtocluster"], protocluster: secmet.Protocluster) -> "AsdbProtocluster":
+        return cls(protocluster.product, protocluster.location.start, protocluster.location.end)
+
+
 class AsdbRegion:
     __slots__ = (
         'accession',
@@ -60,6 +85,7 @@ class AsdbRegion:
                  products: str,
                  contig_edge: bool,
                  description: str,
+                 protoclusters: List[AsdbProtocluster],
                  loci: List["AsdbLocus"],
                  minimal: bool = True,
                 ) -> None:
@@ -89,9 +115,13 @@ class AsdbRegion:
         for cds in region.cds_children:
             loci.append(AsdbLocus.from_secmet(cds, accession))
 
+        protoclusters = []  # type: List[AsdbProtocluster]
+        for protocluster in region.get_unique_protoclusters():
+            protoclusters.append(AsdbProtocluster.from_secmet(protocluster))
+
         return cls(accession, region.location.start, region.location.end,
                    region.get_product_string(), region.contig_edge, description,
-                   loci, minimal)
+                   protoclusters, loci, minimal)
 
     def write_fasta(self, handle):
         """Write all loci to handle in FASTA format."""
@@ -130,6 +160,7 @@ class AsdbRegion:
             "start": self.start,
             "end": self.end,
             "cluster_type": self.cluster_type,
+            "protoclusters": [pc.to_dict() for pc in self.protoclusters],
             "truncated": self.contig_edge,
             "loci": list(map(lambda l: l.to_dict(), self.loci)),
         }

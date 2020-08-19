@@ -141,6 +141,29 @@ class AsdbRegion:
             handle.write(locus.sequence)
             handle.write('\n')
 
+    def write_long_fasta_legacy(self, handle):
+        """Write all loci to handle in FASTA format with long headers in legacy format."""
+        for locus in self.loci:
+            strand = "+" if locus.location.strand == 1 else "-"
+            start = locus.location.nofuzzy_start + 1
+            header = (">{l.accession}|c{s.start}-{s.end}|{start}-{l.location.nofuzzy_end}|{strand}|"
+                      "{l.safe_locus_tag}|{l.safe_annotation}|{l.safe_accession}\n".format(l=locus, start=start, strand=strand, s=self))
+            handle.write(header)
+            handle.write(locus.sequence)
+            handle.write('\n')
+
+    def write_tabs_legacy(self, handle):
+        """Write cluster info in ClusterBlast legacy tabular format."""
+        elements = [
+            self.accession,
+            self.description,
+            "c{s.start}-{s.end}".format(s=self),
+            self.cluster_type,
+            ";".join(map(lambda l: l.safe_locus_tag, self.loci)),
+            ";".join(map(lambda l: l.safe_accession, self.loci)),
+        ]
+        handle.write("\t".join(elements) + "\n")
+
     def write_tabs(self, handle):
         """Write cluster info in ClusterBlast tabular format."""
         elements = [
@@ -294,11 +317,15 @@ def run(file_list: List[str]) -> None:
 
     with open("proteins.fasta", "w") as prots, \
          open("verbose_proteins.fasta", "w") as verbose_prots, \
-         open("clusters.txt", "w") as tabs:
+         open("clusters.txt", "w") as tabs, \
+         open("legacy_clusters.txt", "w") as legacy_tabs, \
+         open("legacy_proteins.fasta", "w") as legacy_prots:
         for region in regions:
             region.write_fasta(prots)
             region.write_long_fasta(verbose_prots)
             region.write_tabs(tabs)
+            region.write_tabs_legacy(legacy_tabs)
+            region.write_long_fasta_legacy(legacy_prots)
 
     with open("clusters.json", "w") as handle:
         json.dump(list(map(lambda x: x.to_dict(), regions)), handle)

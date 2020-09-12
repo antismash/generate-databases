@@ -311,6 +311,8 @@ def run(file_list: List[str]) -> None:
     for filename in file_list:
         for record in regenerate(filename):
             for region in record.get_regions():
+                if region.contig_edge:
+                    continue
                 regions.append(AsdbRegion.from_secmet(record, region))
 
     regions.sort(key=lambda x: (x.accession, x.start))

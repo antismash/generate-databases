@@ -213,19 +213,16 @@ def run(args):
 
     for directory in directories:
         mibig_id = os.path.basename(directory)
-        json_file = os.path.join(directory, "{}.json".format(mibig_id))
+        json_file = os.path.join(directory, "annotations.json")
         with open(json_file, 'r') as handle:
             raw_entry = open(json_file, 'r').read().strip()
         entry = Everything(json.loads(raw_entry))
         cluster_type = "+".join(parse_bgc_types(entry))
         minimal = entry.cluster.minimal
         description = "/".join([c.compound for c in entry.cluster.compounds])
-        acc = entry.cluster.loci.accession
-        if acc.startswith("MIBIG."):
-            # get rid of MIBIG. prefix
-            acc = acc[6:]
+        acc = entry.cluster.mibig_accession
 
-        genbank_file = os.path.join(directory, "{}.region001.gbk".format(acc))
+        genbank_file = os.path.join(directory, "{}.gbk".format(acc))
         record = SeqIO.read(genbank_file, 'genbank')
 
         clusters.append(MibigCluster.from_biopython(mibig_id, description, record, cluster_type, minimal))

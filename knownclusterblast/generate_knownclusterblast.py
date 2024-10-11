@@ -9,16 +9,16 @@ from Bio.SeqFeature import (
 )
 import json
 import os
-import sys
 from typing import (
-    Any,
-    Dict,
     List,
     Optional,
     Type,
 )
 
-from mibig.converters.read.top import Everything
+from mibig.converters.shared.mibig import MibigEntry
+from mibig.converters.shared.mibig.common import CompletenessLevel
+from mibig.converters.shared.mibig.biosynthesis.classes.base import SynthesisType
+from mibig.converters.shared.mibig.biosynthesis.classes.ribosomal import Ribosomal
 
 DATA_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "data")
 
@@ -35,20 +35,21 @@ def main():
 class MibigCluster:
     __slots__ = (
         'cluster_type',
+        'completeness',
         'description',
         'loci',
         'mibig_id',
-        'minimal',
     )
     def __init__(self,
                  mibig_id: str,
                  cluster_type: str,
+                 completeteness: CompletenessLevel,
                  description: str,
                  loci: List["MibigLocus"],
-                 minimal: bool = True,
                 ) -> None:
         self.mibig_id = mibig_id
         self.cluster_type = cluster_type
+        self.completeness = completeteness
 
         self.description = description
         # Kill useless, noisy " biosynthetic gene cluster" string
@@ -58,7 +59,6 @@ class MibigCluster:
         # TODO: Make sure locus tags are unique?
         self.loci = loci
 
-        self.minimal = minimal
 
     @classmethod
     def from_biopython(cls: Type["MibigCluster"],
@@ -66,7 +66,8 @@ class MibigCluster:
                        description: str,
                        record: SeqRecord,
                        cluster_type: str,
-                       minimal: bool):
+                       completeness: CompletenessLevel,
+                      ):
 
         loci = []  # type: List[MibigLocus]
         for feature in record.features:
@@ -75,7 +76,7 @@ class MibigCluster:
 
             loci.append(MibigLocus.from_biopython(feature, mibig_id))
 
-        return cls(mibig_id, cluster_type, description, loci, minimal)
+        return cls(mibig_id, cluster_type, completeness, description, loci)
 
     def write_fasta(self, handle):
         """Write all loci to handle in FASTA format."""
@@ -89,9 +90,10 @@ class MibigCluster:
         """Write all loci to handle in old-style FASTA format."""
         for locus in self.loci:
             strand = "+" if locus.location.strand == 1 else "-"
-            start = locus.location.nofuzzy_start + 1
-            header = (">{l.accession}|c1|{start}-{l.location.nofuzzy_end}|{strand}|"
-                      "{l.safe_locus_tag}|{l.safe_annotation}|{l.identifier}\n".format(l=locus, start=start, strand=strand))
+            start = int(locus.location.start) + 1
+            end = int(locus.location.end)
+            header = (">{l.accession}|c1|{start}-{end}|{strand}|"
+                      "{l.safe_locus_tag}|{l.safe_annotation}|{l.identifier}\n".format(l=locus, start=start, end=end, strand=strand))
             handle.write(header)
             handle.write(locus.sequence)
             handle.write('\n')
@@ -114,7 +116,7 @@ class MibigCluster:
             "id": self.mibig_id,
             "description": self.description,
             "cluster_type": self.cluster_type,
-            "completeness": "partial" if self.minimal else "full",
+            "completeness": self.completeness.value,
             "loci": list(map(lambda l: l.to_dict(), self.loci)),
         }
         return self_dict
@@ -157,7 +159,7 @@ class MibigLocus:
         annotation = feature.qualifiers.get('product', ["(unknown)"])[0]
         sequence = feature.qualifiers['translation'][0]
 
-        optional_values = {}  # type: Dict[str, str]
+        optional_values: dict[str, str] = {}
         if 'gene' in feature.qualifiers:
             optional_values['gene_id'] = feature.qualifiers['gene'][0]
         if 'locus_tag' in feature.qualifiers:
@@ -214,18 +216,20 @@ def run(args):
     for directory in directories:
         mibig_id = os.path.basename(directory)
         json_file = os.path.join(directory, "annotations.json")
+        if not os.path.exists(json_file):
+            continue
         with open(json_file, 'r') as handle:
             raw_entry = open(json_file, 'r').read().strip()
-        entry = Everything(json.loads(raw_entry))
+        entry = MibigEntry.from_json(json.loads(raw_entry))
         cluster_type = "+".join(parse_bgc_types(entry))
-        minimal = entry.cluster.minimal
-        description = "/".join([c.compound for c in entry.cluster.compounds])
-        acc = entry.cluster.mibig_accession
+        completeness = entry.completeness
+        description = "/".join([c.name for c in entry.compounds])
+        acc = entry.accession
 
         genbank_file = os.path.join(directory, "{}.gbk".format(acc))
         record = SeqIO.read(genbank_file, 'genbank')
 
-        clusters.append(MibigCluster.from_biopython(mibig_id, description, record, cluster_type, minimal))
+        clusters.append(MibigCluster.from_biopython(mibig_id, description, record, cluster_type, completeness))
 
     clusters.sort(key=lambda x: x.mibig_id)
 
@@ -239,103 +243,28 @@ def run(args):
         json.dump(list(map(lambda x: x.to_dict(), clusters)), handle)
 
 
-def parse_bgc_types(entry):
+def parse_bgc_types(entry: MibigEntry) -> list[str]:
     """Parse the BGC type."""
-    types = entry.cluster.biosynthetic_class
-    if "NRP" in types:
-        subtype = parse_nrp_subtype(entry)
-        if subtype:
-            types.remove("NRP")
-            types.append(subtype)
-    if "Polyketide" in types:
-        subtypes = parse_pks_subtypes(entry)
-        if subtypes:
-            types.remove("Polyketide")
-            types.extend(subtypes)
-    if "Saccharide" in types:
-        subtype = parse_saccharide_subtype(entry)
-        if subtype:
-            types.remove("Saccharide")
-            types.append(subtype)
-    if "RiPP" in types:
-        subtype = parse_ripp_subtype(entry)
-        if subtype:
-            types.remove("RiPP")
-            types.append(subtype)
-    if "Other" in types:
-        subtype = parse_other_subtype(entry)
-        if subtype:
-            types.remove("Other")
-            types.append(subtype)
+    types: list[str] = []
+    for bgc_type in entry.biosynthesis.classes:
+        full_type = bgc_type.class_name.value
+        subclass = bgc_type.extra_info.subclass
+        if subclass == "other":
+            full_type += ":other"
+            details = getattr(bgc_type.extra_info, "details", None)
+            if details and not details.startswith("converted from"):
+                full_type += f"({details})"
+        elif bgc_type.class_name == SynthesisType.RIBOSOMAL and subclass == "RiPP":
+            full_type += ":RiPP"
+            assert isinstance(bgc_type.extra_info, Ribosomal)  # make mypy happy
+            info = bgc_type.extra_info.ripp_type
+            if info:
+                full_type += f":{info}"
+        elif subclass not in ("Unknown", None):
+            full_type += f":{subclass}"
+        types.append(full_type)
 
     return types
-
-
-def parse_nrp_subtype(entry):
-    """Parse NRP subtype."""
-    try:
-        subtype = entry.cluster.nrp.subclass
-    except AttributeError:
-        return None
-    if subtype in (None, "Unknown", "Other"):
-        return None
-    # I don't know any non-other lipopeptide in our dataset
-    if subtype == "Other lipopeptide":
-        subtype = "Lipopeptide"
-    elif subtype == "Ca+-dependent lipopeptide":
-        subtype = "Lipopeptide:Ca+-dependent lipopeptide"
-    return "NRP:" + subtype
-
-
-def parse_pks_subtypes(entry):
-    """Parse PKS subtypes."""
-    subtypes = []
-    try:
-        synthases = entry.cluster.polyketide.synthases
-        for synthase in synthases:
-            subtype = synthase.subclass or []
-            subtypes.extend(subtype)
-        return ["Polyketide:{} polyketide".format(t) for t in subtypes]
-    except AttributeError:
-        return []
-
-
-def parse_saccharide_subtype(entry):
-    """Parse Saccharide subtype."""
-    try:
-        subtype = entry.cluster.saccharide.subclass
-    except AttributeError:
-        return None
-    if subtype is None:
-        return None
-    subtype = subtype.capitalize()
-    if subtype in ("Unknown", "Other"):
-        return None
-    if subtype == "Hybrid/tailoring":
-        subtype += " saccharide"
-    return "Saccharide:" + subtype
-
-
-def parse_ripp_subtype(entry):
-    """Parse RiPPs subtype."""
-    try:
-        subtype = entry.cluster.ripp.subclass
-    except AttributeError:
-        return None
-    if subtype in (None, "Unknown"):
-        return None
-    return "RiPP:" + subtype
-
-
-def parse_other_subtype(entry):
-    """Parse "Other" subtype."""
-    try:
-        subtype = entry.cluster.other.subclass
-    except AttributeError:
-        return None
-    if subtype in (None, "Unknown"):
-        return None
-    return "Other:" + subtype
 
 
 if __name__ == "__main__":
